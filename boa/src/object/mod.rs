@@ -2,16 +2,20 @@
 
 use crate::{
     builtins::{
-        array::array_iterator::ArrayIterator, map::map_iterator::MapIterator,
-        map::ordered_map::OrderedMap, regexp::regexp_string_iterator::RegExpStringIterator,
-        set::ordered_set::OrderedSet, set::set_iterator::SetIterator,
-        string::string_iterator::StringIterator, Date, RegExp,
+        array::array_iterator::ArrayIterator,
+        function::{Captures, Function, NativeFunctionSignature},
+        map::map_iterator::MapIterator,
+        map::ordered_map::OrderedMap,
+        regexp::regexp_string_iterator::RegExpStringIterator,
+        set::ordered_set::OrderedSet,
+        set::set_iterator::SetIterator,
+        string::string_iterator::StringIterator,
+        Date, RegExp,
     },
     context::StandardConstructor,
     gc::{Finalize, Trace},
-    object::function::{Captures, Function, NativeFunctionSignature},
     property::{Attribute, PropertyDescriptor, PropertyKey},
-    BoaProfiler, Context, JsBigInt, JsResult, JsString, JsSymbol, JsValue,
+    Context, JsBigInt, JsResult, JsString, JsSymbol, JsValue,
 };
 use std::{
     any::Any,
@@ -22,7 +26,6 @@ use std::{
 #[cfg(test)]
 mod tests;
 
-pub mod function;
 mod gcobject;
 pub(crate) mod internal_methods;
 mod operations;
@@ -335,99 +338,6 @@ impl Default for Object {
 }
 
 impl Object {
-    #[inline]
-    pub fn new() -> Self {
-        Default::default()
-    }
-
-    /// Return a new ObjectData struct, with `kind` set to Ordinary
-    #[inline]
-    pub fn function(function: Function, prototype: JsValue) -> Self {
-        let _timer = BoaProfiler::global().start_event("Object::Function", "object");
-
-        Self {
-            data: ObjectData::function(function),
-            properties: PropertyMap::default(),
-            prototype,
-            extensible: true,
-        }
-    }
-
-    /// ObjectCreate is used to specify the runtime creation of new ordinary objects.
-    ///
-    /// More information:
-    ///  - [ECMAScript reference][spec]
-    ///
-    /// [spec]: https://tc39.es/ecma262/#sec-objectcreate
-    // TODO: proto should be a &Value here
-    #[inline]
-    pub fn create(proto: JsValue) -> Self {
-        let mut obj = Self::new();
-        obj.prototype = proto;
-        obj
-    }
-
-    /// Return a new Boolean object whose `[[BooleanData]]` internal slot is set to argument.
-    #[inline]
-    pub fn boolean(value: bool) -> Self {
-        Self {
-            data: ObjectData::boolean(value),
-            properties: PropertyMap::default(),
-            prototype: JsValue::null(),
-            extensible: true,
-        }
-    }
-
-    /// Return a new `Number` object whose `[[NumberData]]` internal slot is set to argument.
-    #[inline]
-    pub fn number(value: f64) -> Self {
-        Self {
-            data: ObjectData::number(value),
-            properties: PropertyMap::default(),
-            prototype: JsValue::null(),
-            extensible: true,
-        }
-    }
-
-    /// Return a new `String` object whose `[[StringData]]` internal slot is set to argument.
-    #[inline]
-    pub fn string<S>(value: S) -> Self
-    where
-        S: Into<JsString>,
-    {
-        Self {
-            data: ObjectData::string(value.into()),
-            properties: PropertyMap::default(),
-            prototype: JsValue::null(),
-            extensible: true,
-        }
-    }
-
-    /// Return a new `BigInt` object whose `[[BigIntData]]` internal slot is set to argument.
-    #[inline]
-    pub fn bigint(value: JsBigInt) -> Self {
-        Self {
-            data: ObjectData::big_int(value),
-            properties: PropertyMap::default(),
-            prototype: JsValue::null(),
-            extensible: true,
-        }
-    }
-
-    /// Create a new native object of type `T`.
-    #[inline]
-    pub fn native_object<T>(value: T) -> Self
-    where
-        T: NativeObject,
-    {
-        Self {
-            data: ObjectData::native_object(Box::new(value)),
-            properties: PropertyMap::default(),
-            prototype: JsValue::null(),
-            extensible: true,
-        }
-    }
-
     #[inline]
     pub fn kind(&self) -> &ObjectKind {
         &self.data.kind
@@ -918,15 +828,6 @@ impl Object {
         }
     }
 
-    /// Similar to `Value::new_object`, but you can pass a prototype to create from, plus a kind
-    #[inline]
-    pub fn with_prototype(proto: JsValue, data: ObjectData) -> Object {
-        let mut object = Object::new();
-        object.data = data;
-        object.set_prototype_instance(proto);
-        object
-    }
-
     /// Returns `true` if it holds an Rust type that implements `NativeObject`.
     #[inline]
     pub fn is_native_object(&self) -> bool {
@@ -1211,13 +1112,14 @@ impl<'context> FunctionBuilder<'context> {
     /// Build the function object.
     #[inline]
     pub fn build(&mut self) -> JsObject {
-        let mut function = Object::function(
-            self.function.take().unwrap(),
-            self.context
-                .standard_objects()
-                .function_object()
-                .prototype()
-                .into(),
+        let function = JsObject::from_proto_and_data(
+            Some(
+                self.context
+                    .standard_objects()
+                    .function_object()
+                    .prototype(),
+            ),
+            ObjectData::function(self.function.take().unwrap()),
         );
         let property = PropertyDescriptor::builder()
             .writable(false)
@@ -1226,7 +1128,7 @@ impl<'context> FunctionBuilder<'context> {
         function.insert_property("name", property.clone().value(self.name.clone()));
         function.insert_property("length", property.value(self.length));
 
-        JsObject::new(function)
+        function
     }
 
     /// Initializes the `Function.prototype` function object.
@@ -1380,8 +1282,8 @@ impl<'context> ConstructorBuilder<'context> {
         Self {
             context,
             constructor_function: constructor,
-            constructor_object: JsObject::new(Object::default()),
-            prototype: JsObject::new(Object::default()),
+            constructor_object: JsObject::empty(),
+            prototype: JsObject::empty(),
             length: 0,
             name: JsString::default(),
             callable: true,
